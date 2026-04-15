@@ -133,6 +133,7 @@ static void LCR_SyncStartMeasurementFrame(LCR_MeasurementStep step);
 static void LCR_Set_InputSelection(uint8_t select_voltage);
 static void LCR_Set_ReferenceSelection(uint8_t select_quadrature);
 static uint16_t LCR_ADC_ReadAverage(uint32_t sample_count);
+static float LCR_ADC_CountToInputVolt(uint16_t adc_count);
 static float LCR_ADC_CountToProjectionVolt(uint16_t adc_count);
 static void LCR_UpdateImpedanceEstimate(void);
 static void LCR_StartMeasurementStep(LCR_MeasurementStep step);
@@ -140,6 +141,7 @@ static void LCR_Measurement_Task(void);
 static void LCR_Key_Task(void);
 static void LCR_OLED_InitScreen(void);
 static void LCR_OLED_Task(void);
+static const char *LCR_GetStepName(LCR_MeasurementStep step);
 void LCR_QuadratureOutput_Tick(void);
 /* USER CODE END PFP */
 
@@ -147,10 +149,12 @@ void LCR_QuadratureOutput_Tick(void);
 /* USER CODE BEGIN 0 */
 static void LCR_Power_Enable(void)
 {
-  HAL_GPIO_WritePin(EN__5V_GPIO_Port, EN__5V_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(EN__3_3V_GPIO_Port, EN__3_3V_Pin, GPIO_PIN_SET);
+ 
   HAL_GPIO_WritePin(EN__3_3VB4_GPIO_Port, EN__3_3VB4_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(VOUT_EN_GPIO_Port, VOUT_EN_Pin, GPIO_PIN_SET);
+	HAL_Delay(500);
+	HAL_GPIO_WritePin(EN__5V_GPIO_Port, EN__5V_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(EN__3_3V_GPIO_Port, EN__3_3V_Pin, GPIO_PIN_SET);
 }
 
 static void LCR_Configure_ExcitationPath(void)
@@ -332,9 +336,14 @@ static uint16_t LCR_ADC_ReadAverage(uint32_t sample_count)
   return (uint16_t)(sum / sample_count);
 }
 
+static float LCR_ADC_CountToInputVolt(uint16_t adc_count)
+{
+  return ((float)adc_count * LCR_ADC_VREF_VOLT) / LCR_ADC_FULL_SCALE_COUNT;
+}
+
 static float LCR_ADC_CountToProjectionVolt(uint16_t adc_count)
 {
-  return (((float)adc_count * LCR_ADC_VREF_VOLT) / LCR_ADC_FULL_SCALE_COUNT) - LCR_ADC_BIAS_VOLT;
+  return LCR_ADC_CountToInputVolt(adc_count) - LCR_ADC_BIAS_VOLT;
 }
 
 static void LCR_UpdateImpedanceEstimate(void)
@@ -466,27 +475,32 @@ static void LCR_OLED_InitScreen(void)
 
 static void LCR_Key_Task(void)
 {
-  GPIO_PinState key_state;
+  GPIO_PinState key4_state;
+  GPIO_PinState key1_state;
   uint32_t now_tick_ms;
-  static GPIO_PinState last_sampled_state = GPIO_PIN_SET;
-  static GPIO_PinState stable_state = GPIO_PIN_SET;
-  static uint32_t last_transition_tick_ms = 0U;
+  static GPIO_PinState last_key4_sampled_state = GPIO_PIN_SET;
+  static GPIO_PinState key4_stable_state = GPIO_PIN_SET;
+  static uint32_t last_key4_transition_tick_ms = 0U;
+  static GPIO_PinState last_key1_sampled_state = GPIO_PIN_SET;
+  static GPIO_PinState key1_stable_state = GPIO_PIN_SET;
+  static uint32_t last_key1_transition_tick_ms = 0U;
 
   now_tick_ms = HAL_GetTick();
-  key_state = HAL_GPIO_ReadPin(KEY4_GPIO_Port, KEY4_Pin);
+  key4_state = HAL_GPIO_ReadPin(KEY4_GPIO_Port, KEY4_Pin);
+  key1_state = HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin);
 
-  if (key_state != last_sampled_state)
+  if (key4_state != last_key4_sampled_state)
   {
-    last_sampled_state = key_state;
-    last_transition_tick_ms = now_tick_ms;
+    last_key4_sampled_state = key4_state;
+    last_key4_transition_tick_ms = now_tick_ms;
   }
 
-  if (((now_tick_ms - last_transition_tick_ms) >= LCR_KEY_DEBOUNCE_MS) &&
-      (stable_state != last_sampled_state))
+  if (((now_tick_ms - last_key4_transition_tick_ms) >= LCR_KEY_DEBOUNCE_MS) &&
+      (key4_stable_state != last_key4_sampled_state))
   {
-    stable_state = last_sampled_state;
+    key4_stable_state = last_key4_sampled_state;
 
-    if (stable_state == GPIO_PIN_RESET)
+    if (key4_stable_state == GPIO_PIN_RESET)
     {
       if (lcr_display_page == LCR_DISPLAY_PAGE_MEASUREMENT)
       {
@@ -498,6 +512,38 @@ static void LCR_Key_Task(void)
       }
     }
   }
+
+  if (key1_state != last_key1_sampled_state)
+  {
+    last_key1_sampled_state = key1_state;
+    last_key1_transition_tick_ms = now_tick_ms;
+  }
+
+  if (((now_tick_ms - last_key1_transition_tick_ms) >= LCR_KEY_DEBOUNCE_MS) &&
+      (key1_stable_state != last_key1_sampled_state))
+  {
+    key1_stable_state = last_key1_sampled_state;
+
+    if (key1_stable_state == GPIO_PIN_RESET)
+    {
+      lcr_force_step_enable = 1U;
+      lcr_force_step_index = (uint8_t)((lcr_force_step_index + 1U) & 0x03U);
+      lcr_display_page = LCR_DISPLAY_PAGE_DEBUG_VALUES;
+    }
+  }
+}
+
+static const char *LCR_GetStepName(LCR_MeasurementStep step)
+{
+  static const char *const step_names[LCR_STEP_COUNT] =
+  {
+    "V0",
+    "V90",
+    "I0",
+    "I90"
+  };
+
+  return step_names[(uint32_t)step];
 }
 
 static void LCR_OLED_Task(void)
@@ -567,15 +613,18 @@ static void LCR_OLED_Task(void)
   }
   else
   {
-    OLED_ShowString(0U, 0U, "KEY4 Debug", OLED_6X8);
+    (void)snprintf(line_buffer, sizeof(line_buffer), "DBG F:%s", LCR_GetStepName((LCR_MeasurementStep)(lcr_force_step_index & 0x03U)));
+    OLED_ShowString(0U, 0U, line_buffer, OLED_6X8);
+    (void)snprintf(line_buffer, sizeof(line_buffer), "ADC:%+5.3f", LCR_ADC_CountToInputVolt(lcr_debug.raw_adc[lcr_force_step_index & 0x03U]));
+    OLED_ShowString(0U, 9U, line_buffer, OLED_6X8);
     (void)snprintf(line_buffer, sizeof(line_buffer), "V0 :%+6.3f", lcr_debug.projection_volt[LCR_STEP_VOLTAGE_IN_PHASE]);
-    OLED_ShowString(0U, 16U, line_buffer, OLED_6X8);
+    OLED_ShowString(0U, 18U, line_buffer, OLED_6X8);
     (void)snprintf(line_buffer, sizeof(line_buffer), "V90:%+6.3f", lcr_debug.projection_volt[LCR_STEP_VOLTAGE_QUADRATURE]);
-    OLED_ShowString(0U, 28U, line_buffer, OLED_6X8);
+    OLED_ShowString(0U, 27U, line_buffer, OLED_6X8);
     (void)snprintf(line_buffer, sizeof(line_buffer), "I0 :%+6.3f", lcr_debug.projection_volt[LCR_STEP_CURRENT_IN_PHASE]);
-    OLED_ShowString(0U, 40U, line_buffer, OLED_6X8);
+    OLED_ShowString(0U, 36U, line_buffer, OLED_6X8);
     (void)snprintf(line_buffer, sizeof(line_buffer), "I90:%+6.3f", lcr_debug.projection_volt[LCR_STEP_CURRENT_QUADRATURE]);
-    OLED_ShowString(0U, 52U, line_buffer, OLED_6X8);
+    OLED_ShowString(0U, 45U, line_buffer, OLED_6X8);
   }
 
   OLED_Update();
