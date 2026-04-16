@@ -51,6 +51,7 @@ void AD9834_Write_16Bits(uint16_t data);
 void AD9834_Select_Wave(uint16_t waveform);
 void AD9834_Init(void);
 void AD9834_Set_Freq(uint8_t freq_number, uint32_t freq_hz);
+void AD9834_Set_FreqMilliHz(uint8_t freq_number, uint32_t freq_millihz);
 void AD9834_Set_Phase(uint8_t phase_number, float phase_in_degrees);
 void AD9834_Set_MclkHz(uint32_t mclk_hz);
 uint32_t AD9834_Get_MclkHz(void);

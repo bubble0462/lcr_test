@@ -112,6 +112,11 @@ void AD9834_Select_Wave(uint16_t waveform)
 
 void AD9834_Set_Freq(uint8_t freq_number, uint32_t freq_hz)
 {
+  AD9834_Set_FreqMilliHz(freq_number, freq_hz * 1000U);
+}
+
+void AD9834_Set_FreqMilliHz(uint8_t freq_number, uint32_t freq_millihz)
+{
   uint32_t freq_reg;
   uint16_t reg_addr;
   uint16_t freq_lsb;
@@ -128,7 +133,8 @@ void AD9834_Set_Freq(uint8_t freq_number, uint32_t freq_hz)
     return;
   }
 
-  freq_reg = (uint32_t)(((((uint64_t)freq_hz) << 28) + (ad9834_mclk_hz / 2U)) / ad9834_mclk_hz);
+  freq_reg = (uint32_t)(((((uint64_t)freq_millihz << 28) + ((uint64_t)ad9834_mclk_hz * 500ULL)) /
+                         ((uint64_t)ad9834_mclk_hz * 1000ULL)));
   if (freq_reg > 0x0FFFFFFFU)
   {
     freq_reg = 0x0FFFFFFFU;

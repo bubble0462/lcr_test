@@ -37,11 +37,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LCR_EXCITATION_FREQ_HZ        1000UL
-#define LCR_QUADRATURE_UPDATE_HZ      (LCR_EXCITATION_FREQ_HZ * 4UL)
-#define LCR_TIM2_TICK_HZ              1000000UL
-#define LCR_TIM2_PRESCALER            ((84000000UL / LCR_TIM2_TICK_HZ) - 1UL)
-#define LCR_TIM2_AUTORELOAD           ((LCR_TIM2_TICK_HZ / LCR_QUADRATURE_UPDATE_HZ) - 1UL)
+#define LCR_EXCITATION_FREQ_MILLIHZ   976600UL
+#define LCR_TIM2_PRESCALER            0UL
+#define LCR_TIM2_AUTORELOAD           21502UL
 #define LCR_ADC_SAMPLE_COUNT          64U
 #define LCR_MEASUREMENT_SETTLE_MS     180U
 #define LCR_ADC_VREF_VOLT             3.3f
@@ -124,12 +122,9 @@ void SystemClock_Config(void);
 static void LCR_Power_Enable(void);
 static void LCR_Configure_ExcitationPath(void);
 static void LCR_Configure_MeasurementPath(void);
-static void LCR_Start_1kHzExcitation(void);
+static void LCR_Start_Excitation(void);
 static void LCR_QuadratureOutput_SetStep(uint8_t step);
 static void LCR_QuadratureOutput_Start(void);
-static void LCR_QuadratureOutput_Stop(void);
-static uint8_t LCR_GetInitialQuadratureStep(LCR_MeasurementStep step);
-static void LCR_SyncStartMeasurementFrame(LCR_MeasurementStep step);
 static void LCR_Set_InputSelection(uint8_t select_voltage);
 static void LCR_Set_ReferenceSelection(uint8_t select_quadrature);
 static uint16_t LCR_ADC_ReadAverage(uint32_t sample_count);
@@ -181,15 +176,15 @@ static void LCR_Configure_MeasurementPath(void)
   HAL_GPIO_WritePin(IO_SW_S1_GPIO_Port, IO_SW_S1_Pin, GPIO_PIN_RESET);
 }
 
-static void LCR_Start_1kHzExcitation(void)
+static void LCR_Start_Excitation(void)
 {
   AD9834_Set_MclkHz(75000000UL);
   AD9834_Init();
-  AD9834_Set_Freq(FREQ_0, LCR_EXCITATION_FREQ_HZ);
+  AD9834_Set_FreqMilliHz(FREQ_0, LCR_EXCITATION_FREQ_MILLIHZ);
   AD9834_Set_Phase(PHASE_0, 0.0f);
   AD9834_Select_Wave(SINE_WAVE);
   AD9834_Set_OutputEnabled(1U);
-  AD9834_Set_Reset(1U);
+  AD9834_Set_Reset(0U);
 }
 
 static void LCR_QuadratureOutput_SetStep(uint8_t step)
@@ -232,64 +227,16 @@ static void LCR_QuadratureOutput_Start(void)
   TIM2->EGR = TIM_EGR_UG;
   TIM2->SR = 0U;
   TIM2->DIER = TIM_DIER_UIE;
-  TIM2->CR1 = TIM_CR1_ARPE;
+  TIM2->CR1 = TIM_CR1_ARPE | TIM_CR1_CEN;
 
   HAL_NVIC_SetPriority(TIM2_IRQn, 4U, 0U);
   HAL_NVIC_EnableIRQ(TIM2_IRQn);
-}
-
-static void LCR_QuadratureOutput_Stop(void)
-{
-  TIM2->CR1 &= (uint16_t)~TIM_CR1_CEN;
-  TIM2->DIER &= (uint16_t)~TIM_DIER_UIE;
-  TIM2->SR = 0U;
 }
 
 void LCR_QuadratureOutput_Tick(void)
 {
   quadrature_step = (uint8_t)((quadrature_step + 1U) & 0x03U);
   LCR_QuadratureOutput_SetStep(quadrature_step);
-}
-
-static uint8_t LCR_GetInitialQuadratureStep(LCR_MeasurementStep step)
-{
-  if ((step == LCR_STEP_VOLTAGE_QUADRATURE) || (step == LCR_STEP_CURRENT_QUADRATURE))
-  {
-    return 1U;
-  }
-
-  return 0U;
-}
-
-static void LCR_SyncStartMeasurementFrame(LCR_MeasurementStep step)
-{
-  uint32_t primask;
-  uint8_t initial_quadrature_step;
-
-  initial_quadrature_step = LCR_GetInitialQuadratureStep(step);
-  primask = __get_PRIMASK();
-  __disable_irq();
-
-  LCR_QuadratureOutput_Stop();
-  AD9834_Set_Reset(1U);
-
-  quadrature_step = initial_quadrature_step;
-  LCR_QuadratureOutput_SetStep(quadrature_step);
-  TIM2->CNT = 0U;
-  TIM2->SR = 0U;
-  TIM2->DIER |= TIM_DIER_UIE;
-
-  AD9834_Set_Reset(0U);
-  TIM2->CR1 |= TIM_CR1_CEN;
-
-  if (primask == 0U)
-  {
-    __enable_irq();
-  }
-
-  lcr_debug.last_sync_step = (uint8_t)step;
-  lcr_debug.last_sync_tick_ms = HAL_GetTick();
-  lcr_debug.sync_start_count++;
 }
 
 static void LCR_Set_InputSelection(uint8_t select_voltage)
@@ -411,7 +358,9 @@ static void LCR_StartMeasurementStep(LCR_MeasurementStep step)
       break;
   }
 
-  LCR_SyncStartMeasurementFrame(step);
+  lcr_debug.last_sync_step = (uint8_t)step;
+  lcr_debug.last_sync_tick_ms = HAL_GetTick();
+  lcr_debug.sync_start_count++;
   lcr_next_sample_tick_ms = HAL_GetTick() + LCR_MEASUREMENT_SETTLE_MS;
 }
 
@@ -587,7 +536,7 @@ static void LCR_OLED_Task(void)
 
   if (lcr_display_page == LCR_DISPLAY_PAGE_MEASUREMENT)
   {
-    OLED_ShowString(0U, 0U, "LCR 1kHz", OLED_8X16);
+  OLED_ShowString(0U, 0U, "LCR 976.6Hz", OLED_8X16);
     OLED_ShowString(0U, 16U, "R:", OLED_8X16);
     if (filtered_resistance_ohm >= 1000.0f)
     {
@@ -666,7 +615,7 @@ int main(void)
   LCR_Power_Enable();
   LCR_Configure_ExcitationPath();
   LCR_Configure_MeasurementPath();
-  LCR_Start_1kHzExcitation();
+  LCR_Start_Excitation();
   LCR_QuadratureOutput_Start();
   HAL_Delay(20);
   LCR_OLED_InitScreen();
